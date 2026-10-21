@@ -3,6 +3,7 @@ Database layer — SQLite (dev) / PostgreSQL (prod)
 """
 
 import sqlite3, os, json, logging
+from contextlib import contextmanager
 from datetime import datetime
 
 logger = logging.getLogger("sentinel.db")
@@ -56,14 +57,31 @@ def init_db():
         );
     """)
     _migrate_analyses_schema(conn)
+    # Indexes for the dashboard: grouped counts and newest-first listing.
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_analyses_verdict ON analyses(verdict);
+        CREATE INDEX IF NOT EXISTS idx_analyses_threat_level ON analyses(threat_level);
+        CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at);
+    """)
     conn.commit()
+    conn.close()
     logger.info(f"Database initialized at {DB_PATH}")
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@contextmanager
+def db_session():
+    """Yield a connection that is always closed afterwards."""
+    conn = get_db()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _migrate_analyses_schema(conn: sqlite3.Connection):
@@ -79,29 +97,33 @@ def _migrate_analyses_schema(conn: sqlite3.Connection):
 
 def save_analysis(result: dict, file_hash: str = None):
     try:
-        conn = get_db()
-        taxonomy = result.get("taxonomy", {})
-        conn.execute("""
-            INSERT OR REPLACE INTO analyses
-            (analysis_id, verdict, confidence, threat_level, metadata, enrichment, narrative, file_hash, processing_time_ms,
-             taxonomy_entity, taxonomy_intent, taxonomy_timing, taxonomy_confidence, taxonomy_rationale)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            result["analysis_id"],
-            result["verdict"],
-            result["confidence"],
-            result["threat_level"],
-            json.dumps(result.get("metadata", {})),
-            json.dumps(result.get("enrichment", {})),
-            result.get("narrative", ""),
-            file_hash,
-            result.get("processing_time_ms", 0),
-            taxonomy.get("entity"),
-            taxonomy.get("intent"),
-            taxonomy.get("timing"),
-            taxonomy.get("confidence"),
-            taxonomy.get("rationale"),
-        ))
-        conn.commit()
+        with db_session() as conn:
+            _insert_analysis(conn, result, file_hash)
     except Exception as e:
         logger.error(f"Failed to save analysis: {e}")
+
+
+def _insert_analysis(conn: sqlite3.Connection, result: dict, file_hash: str = None):
+    taxonomy = result.get("taxonomy", {})
+    conn.execute("""
+        INSERT OR REPLACE INTO analyses
+        (analysis_id, verdict, confidence, threat_level, metadata, enrichment, narrative, file_hash, processing_time_ms,
+         taxonomy_entity, taxonomy_intent, taxonomy_timing, taxonomy_confidence, taxonomy_rationale)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        result["analysis_id"],
+        result["verdict"],
+        result["confidence"],
+        result["threat_level"],
+        json.dumps(result.get("metadata", {})),
+        json.dumps(result.get("enrichment", {})),
+        result.get("narrative", ""),
+        file_hash,
+        result.get("processing_time_ms", 0),
+        taxonomy.get("entity"),
+        taxonomy.get("intent"),
+        taxonomy.get("timing"),
+        taxonomy.get("confidence"),
+        taxonomy.get("rationale"),
+    ))
+    conn.commit()

@@ -6,11 +6,14 @@ Telemetry & Observability
 """
 
 import logging, json, os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").lower() == "true"
 LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "./logs/sentinel.log")
+
+_event_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="telemetry")
 
 
 class JSONFormatter(logging.Formatter):
@@ -58,14 +61,22 @@ def log_event(event_type: str, payload: dict = None):
     record.payload = payload or {}
     logger.handle(record)
 
-    # Persist to DB asynchronously (best-effort)
+    # Persist to DB off the request path (best-effort). A single worker keeps
+    # writes ordered and avoids SQLite write contention between threads.
     try:
-        from db import get_db
-        conn = get_db()
-        conn.execute(
-            "INSERT INTO events (event_type, payload) VALUES (?, ?)",
-            (event_type, json.dumps(payload or {}))
-        )
-        conn.commit()
+        _event_writer.submit(_persist_event, event_type, json.dumps(payload or {}))
+    except RuntimeError:
+        pass  # Executor already shut down during interpreter exit
+
+
+def _persist_event(event_type: str, payload_json: str):
+    try:
+        from db import db_session
+        with db_session() as conn:
+            conn.execute(
+                "INSERT INTO events (event_type, payload) VALUES (?, ?)",
+                (event_type, payload_json),
+            )
+            conn.commit()
     except Exception:
-        pass  # Non-blocking: telemetry must not crash the app
+        pass  # Telemetry must not crash the app

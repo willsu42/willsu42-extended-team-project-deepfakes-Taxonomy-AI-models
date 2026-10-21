@@ -239,7 +239,7 @@ export default function Analyze() {
     }).catch(() => {
       setAvailableModels([
         { id: "claude", name: "Claude (Anthropic)", available: true },
-        { id: "llama", name: "Llama 3 (Groq)", available: false },
+        { id: "llama", name: "GPT-OSS 120B (Groq)", available: false },
       ]);
     });
   }, []);

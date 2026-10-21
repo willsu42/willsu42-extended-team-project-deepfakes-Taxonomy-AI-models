@@ -4,19 +4,18 @@
 
 from fastapi import APIRouter, Query
 from typing import Optional
-from db import get_db
+from db import db_session
 
 router = APIRouter()
 
 
 @router.get("/")
-async def search_analyses(
+def search_analyses(
     q: Optional[str] = Query(None, description="Search term (hash, verdict, narrative)"),
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     limit: int = Query(20, ge=1, le=100),
 ):
-    db = get_db()
     query = "SELECT analysis_id, verdict, confidence, threat_level, narrative, created_at FROM analyses WHERE 1=1"
     params = []
 
@@ -34,5 +33,6 @@ async def search_analyses(
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
 
-    rows = db.execute(query, params).fetchall()
+    with db_session() as db:
+        rows = db.execute(query, params).fetchall()
     return {"results": [dict(r) for r in rows], "count": len(rows)}

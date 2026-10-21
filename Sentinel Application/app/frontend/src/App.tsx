@@ -1,10 +1,12 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
-import { motion } from "framer-motion";
 import Dashboard from "./pages/Dashboard";
-import Analyze from "./pages/Analyze";
-import Reports from "./pages/Reports";
 import { Shield, BarChart2, Search, Upload } from "lucide-react";
 import "./index.css";
+
+// Secondary pages load on demand so the dashboard's first paint ships less code.
+const Analyze = lazy(() => import("./pages/Analyze"));
+const Reports = lazy(() => import("./pages/Reports"));
 
 export default function App() {
   return (
@@ -39,11 +41,13 @@ export default function App() {
         </nav>
 
         <main className="main-content">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/analyze" element={<Analyze />} />
-            <Route path="/reports" element={<Reports />} />
-          </Routes>
+          <Suspense fallback={<div className="loading-bar" />}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/analyze" element={<Analyze />} />
+              <Route path="/reports" element={<Reports />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
     </BrowserRouter>

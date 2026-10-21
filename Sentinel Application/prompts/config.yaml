@@ -4,7 +4,7 @@
 models:
   analyst_narrative:
     provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-5-5
     max_tokens: 512
     temperature: 0.1          # Low: prioritize factual, deterministic outputs
     system_prompt: prompts/analyst.txt
@@ -16,12 +16,12 @@ models:
     providers:
       claude:
         provider: anthropic
-        model: claude-sonnet-4-20250514
+        model: claude-sonnet-5-5
         max_tokens: 256
         temperature: 0.1
       llama:
         provider: groq
-        model: llama-3.3-70b-versatile
+        model: openai/gpt-oss-120b
         max_tokens: 256
     dimensions:
       entity: ["AI", "Human", "Other"]

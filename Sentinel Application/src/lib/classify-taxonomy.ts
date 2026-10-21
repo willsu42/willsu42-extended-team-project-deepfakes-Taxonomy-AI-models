@@ -39,7 +39,7 @@ export async function classifyTaxonomy(rawText: string): Promise<CausalTaxonomy 
 
   try {
     const response = await client.messages.create({
-      model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514",
+      model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
       max_tokens: 256,
       system: TAXONOMY_SYSTEM_PROMPT,
       messages: [

@@ -5,11 +5,11 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
 from pydantic import BaseModel, HttpUrl
 from typing import Optional
-import hashlib, uuid, time, os, logging, json
+import asyncio, hashlib, uuid, time, os, logging, json
 import anthropic
 import groq
 
-from db import get_db, save_analysis
+from db import db_session, save_analysis
 from services.detection import run_detection
 from services.metadata import extract_metadata
 from services.enrichment import enrich_threat
@@ -28,12 +28,14 @@ def get_groq_client():
 AI_MODELS = {
     "claude": {
         "name": "Claude (Anthropic)",
-        "model_id": "claude-sonnet-4-20250514",
+        "model_id": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5"),
         "provider": "anthropic",
     },
+    # Key kept as "llama" so existing clients keep working. Groq retired its
+    # Llama chat models, so this now defaults to an open-weight model on Groq.
     "llama": {
-        "name": "Llama 3 (Groq)",
-        "model_id": "llama-3.3-70b-versatile",
+        "name": "GPT-OSS 120B (Groq)",
+        "model_id": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
         "provider": "groq",
     },
 }
@@ -116,9 +118,11 @@ async def analyze_file(
     metadata = await extract_metadata(contents, file.content_type)
     enrichment = await enrich_threat(file_hash, metadata)
 
-    # Generate analyst narrative and taxonomy classification
-    narrative = await generate_narrative(detection, metadata, enrichment, context, ai_model)
-    taxonomy = await classify_taxonomy(detection, metadata, enrichment, context, ai_model)
+    # Generate analyst narrative and taxonomy classification concurrently
+    narrative, taxonomy = await asyncio.gather(
+        generate_narrative(detection, metadata, enrichment, context, ai_model),
+        classify_taxonomy(detection, metadata, enrichment, context, ai_model),
+    )
 
     processing_time = round((time.time() - start) * 1000)
 
@@ -171,8 +175,10 @@ async def analyze_url(req: URLAnalysisRequest, background_tasks: BackgroundTasks
         "threat_level": enrichment.get("threat_level", "medium"),
     }
 
-    narrative = await generate_narrative(detection, metadata, enrichment, req.context, req.ai_model)
-    taxonomy = await classify_taxonomy(detection, metadata, enrichment, req.context, req.ai_model)
+    narrative, taxonomy = await asyncio.gather(
+        generate_narrative(detection, metadata, enrichment, req.context, req.ai_model),
+        classify_taxonomy(detection, metadata, enrichment, req.context, req.ai_model),
+    )
     processing_time = round((time.time() - start) * 1000)
 
     result = AnalysisResult(
@@ -206,12 +212,12 @@ async def list_models():
 
 
 @router.get("/{analysis_id}")
-async def get_analysis(analysis_id: str):
+def get_analysis(analysis_id: str):
     """Retrieve a previously run analysis by ID."""
-    db = get_db()
-    record = db.execute(
-        "SELECT * FROM analyses WHERE analysis_id = ?", (analysis_id,)
-    ).fetchone()
+    with db_session() as db:
+        record = db.execute(
+            "SELECT * FROM analyses WHERE analysis_id = ?", (analysis_id,)
+        ).fetchone()
     if not record:
         raise HTTPException(404, "Analysis not found")
     return dict(record)
@@ -253,12 +259,21 @@ FALLBACK_TAXONOMY = TaxonomyResult(
 def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 256) -> str:
     """Call Claude API and return text response."""
     response = get_anthropic_client().messages.create(
-        model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+        model=AI_MODELS["claude"]["model_id"],
         max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}]
     )
-    return response.content[0].text
+    # Newer models may return a thinking block before the answer, so join only
+    # the text blocks instead of assuming the first block is the answer.
+    text = "".join(
+        block.text or ""
+        for block in response.content
+        if getattr(block, "type", None) == "text"
+    ).strip()
+    if not text:
+        raise ValueError(f"Claude returned no text (stop_reason={response.stop_reason})")
+    return text
 
 
 def _call_groq(system_prompt: str, user_message: str, max_tokens: int = 256) -> str:
@@ -271,11 +286,23 @@ def _call_groq(system_prompt: str, user_message: str, max_tokens: int = 256) -> 
             {"role": "user", "content": user_message},
         ]
     )
-    return response.choices[0].message.content
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise ValueError(f"Groq returned no text (finish_reason={response.choices[0].finish_reason})")
+    return text
 
 
-def _call_llm(provider: str, system_prompt: str, user_message: str, max_tokens: int = 256) -> str:
-    """Route to the correct LLM provider."""
+async def _call_llm(provider: str, system_prompt: str, user_message: str, max_tokens: int = 256) -> str:
+    """Route to the correct LLM provider.
+
+    The provider SDK clients are synchronous, so the call runs in a worker
+    thread. Calling them directly would block the event loop and stall every
+    other request, including the dashboard, until the LLM responds.
+    """
+    return await asyncio.to_thread(_call_llm_sync, provider, system_prompt, user_message, max_tokens)
+
+
+def _call_llm_sync(provider: str, system_prompt: str, user_message: str, max_tokens: int = 256) -> str:
     if provider == "groq":
         return _call_groq(system_prompt, user_message, max_tokens)
     else:
@@ -296,7 +323,7 @@ Enrichment: {enrichment}
 Context: {context or 'None provided'}"""
 
     try:
-        text = _call_llm(provider, TAXONOMY_SYSTEM_PROMPT, user_message)
+        text = await _call_llm(provider, TAXONOMY_SYSTEM_PROMPT, user_message)
         parsed = json.loads(text)
 
         if (parsed.get("entity") not in VALID_ENTITY or
@@ -343,7 +370,7 @@ Respond with a 2-3 sentence structured analyst summary. Include: (1) what was de
 """
 
     try:
-        return _call_llm(provider, system_prompt, user_message, max_tokens=512)
+        return await _call_llm(provider, system_prompt, user_message, max_tokens=512)
     except Exception as e:
         logger.warning(f"Narrative generation failed: {e}")
         return f"Detection complete. Verdict: {detection.get('verdict')} with {detection.get('confidence', 0)*100:.0f}% confidence. Manual review recommended."

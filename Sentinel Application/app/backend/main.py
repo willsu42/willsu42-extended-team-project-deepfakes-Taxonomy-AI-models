@@ -25,15 +25,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -43,7 +34,17 @@ async def startup():
 async def request_logger(request: Request, call_next):
     request_id = str(uuid.uuid4())[:8]
     start = time.time()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Return the 500 from here so CORSMiddleware (added below, outermost)
+        # still attaches CORS headers. Otherwise the browser hides the error
+        # and the frontend only sees "Network Error".
+        logger.exception(f"Unhandled error on {request.method} {request.url.path}")
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error", "request_id": request_id},
+        )
     duration = round((time.time() - start) * 1000)
     log_event("http_request", {
         "request_id": request_id,
@@ -53,6 +54,16 @@ async def request_logger(request: Request, call_next):
         "duration_ms": duration,
     })
     return response
+
+# CORS — added after the logging middleware so it wraps it and also covers
+# error responses produced there.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(analyze.router, prefix="/api/analyze", tags=["Analysis"])
 app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])

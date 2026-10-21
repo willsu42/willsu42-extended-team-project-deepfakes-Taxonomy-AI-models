@@ -60,7 +60,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 - **FastAPI** (Python) — REST API, analysis pipeline, SQLite storage
 - **React + Vite** (TypeScript) — Frontend UI
-- **Anthropic Claude** (`claude-sonnet-4-20250514`) — AI analyst narratives
+- **Anthropic Claude** (`claude-sonnet-5-5`) — AI analyst narratives
 - **Hive Moderation API** — Deepfake detection scoring (heuristic fallback if no key)
 - **VirusTotal + Google Safe Browsing** — Threat enrichment (optional)
 - **Recharts** — Dashboard charts
