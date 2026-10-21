@@ -267,7 +267,7 @@ export default function Analyze() {
     } finally {
       setLoading(false);
     }
-  }, [context]);
+  }, [context, aiModel]);
 
   const handleUrlSubmit = async () => {
     if (!url) return;
